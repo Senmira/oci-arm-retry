@@ -2,13 +2,13 @@ name: OCI ARM Instance Retry
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
   retry:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
 
     steps:
       - name: Install OCI CLI
@@ -44,7 +44,7 @@ jobs:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          # Properly normalize the SSH public key to one line:
+          # Normalize the SSH public key to one line:
           # 1. Replace any \r or \n with spaces
           # 2. Squeeze repeated spaces into a single space
           # 3. Trim leading/trailing spaces
@@ -60,7 +60,7 @@ jobs:
           
           echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
           
-          for i in $(seq 1 8); do
+          for i in $(seq 1 6); do
             echo "════════ Attempt $i at $(date -u) ════════"
             
             OUTPUT=$(oci compute instance launch \
@@ -82,16 +82,16 @@ jobs:
               exit 0
             fi
             
-            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError"; then
-              echo "⏳ Out of capacity, waiting 60s..."
-              sleep 60
+            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError\|TooManyRequests\|LimitExceeded"; then
+              echo "⏳ Capacity or rate limit, waiting 90s..."
+              sleep 90
             else
               echo "❌ Unexpected error, aborting."
               exit 1
             fi
           done
           
-          echo "🔁 8 attempts exhausted, next run in 15 min"
+          echo "🔁 Attempts exhausted, next run in 30 min"
           exit 0
 
       - name: Show result
