@@ -1,80 +1,86 @@
-name: OCI ARM Retry
+name: OCI ARM Instance Retry
 
 on:
-  workflow_dispatch:  # Manual trigger only
-
-concurrency:
-  group: oci-retry            # Only one Job allowed per group
-  cancel-in-progress: false   # Do not cancel running jobs; new ones queue (max 1 running + 1 waiting)
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   retry:
     runs-on: ubuntu-latest
-    timeout-minutes: 355      # Close to GitHub Actions 6-hour limit
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Suppress Node.js 20 deprecation warning
+    timeout-minutes: 12
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Install OCI CLI
+        run: pip install oci-cli
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install OCI SDK
-        run: pip install oci
-
-      - name: Set up OCI credentials
+      - name: Configure OCI CLI
         env:
-          OCI_USER:        ${{ secrets.OCI_USER }}
-          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
-          OCI_TENANCY:     ${{ secrets.OCI_TENANCY }}
-          OCI_REGION:      ${{ secrets.OCI_REGION }}
-          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+          OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
         run: |
           mkdir -p ~/.oci
-
-          # Write API private key
-          printf '%s' "$OCI_PRIVATE_KEY" > ~/.oci/oci_api_key.pem
+          printf '%s' "$OCI_CLI_KEY_CONTENT" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
-
-          # Write config (key_file uses absolute path)
-          cat > ~/.oci/config << EOF
+          cat > ~/.oci/config <<EOF
           [DEFAULT]
-          user=$OCI_USER
-          fingerprint=$OCI_FINGERPRINT
-          tenancy=$OCI_TENANCY
-          region=$OCI_REGION
-          key_file=/home/runner/.oci/oci_api_key.pem
+          user=$OCI_CLI_USER
+          fingerprint=$OCI_CLI_FINGERPRINT
+          key_file=$HOME/.oci/oci_api_key.pem
+          tenancy=$OCI_CLI_TENANCY
+          region=$OCI_CLI_REGION
           EOF
+          chmod 600 ~/.oci/config
+          oci iam region list --output table > /dev/null && echo "OCI CLI configured OK"
 
-      - name: Run OCI retry script
-        # Script succeeds (exit 0)  → next step auto-disables the workflow
-        # Timeout expires (exit 124) → treated as failure, triggers next Job
-        # timeout 19800s = 330 min, 25 min less than job timeout 355 min (buffer for setup steps)
-        id: run_script
-        continue-on-error: true
+      - name: Retry ARM instance launch
         env:
-          PYTHONUNBUFFERED: "1"
-        run: timeout 19800 python oci_retry.py
-
-      - name: Auto-disable workflow on success
-        if: steps.run_script.outcome == 'success'
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
-          curl -s -X PUT \
-            -H "Authorization: token ${{ secrets.GH_PAT }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/oci_retry.yml/disable
-          echo "Workflow auto-disabled"
+          printf '%s\n' "$SSH_PUBLIC_KEY" > /tmp/key.pub
+          echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
+          
+          for i in $(seq 1 8); do
+            echo "════════ Attempt $i at $(date -u) ════════"
+            
+            OUTPUT=$(oci compute instance launch \
+              --compartment-id "$OCI_COMPARTMENT_ID" \
+              --availability-domain "dOaV:AP-HYDERABAD-1-AD-1" \
+              --display-name "sanomin-whatsapp-server" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config "file:///tmp/shape.json" \
+              --image-id "$OCI_IMAGE_ID" \
+              --subnet-id "$OCI_SUBNET_ID" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file /tmp/key.pub \
+              2>&1) || true
+            
+            echo "$OUTPUT"
+            
+            if echo "$OUTPUT" | grep -q '"lifecycle-state"'; then
+              echo "✅ SUCCESS — instance created!"
+              exit 0
+            fi
+            
+            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError"; then
+              echo "⏳ Out of capacity, waiting 60s..."
+              sleep 60
+            else
+              echo "❌ Unexpected error, aborting."
+              exit 1
+            fi
+          done
+          
+          echo "🔁 8 attempts exhausted, next run in 15 min"
+          exit 0
 
-      - name: Trigger next Job (seamless relay)
-        if: steps.run_script.outcome != 'success'
-        run: |
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GH_PAT }}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/oci_retry.yml/dispatches \
-            -d '{"ref":"main"}'
-          echo "Next Job triggered"
+      - name: Show result
+        if: always()
+        run: echo "Workflow finished at $(date -u)"
