@@ -2,13 +2,13 @@ name: OCI ARM Instance Retry
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:
   retry:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: Install OCI CLI
@@ -44,19 +44,10 @@ jobs:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          # Normalize the SSH public key to one line
           echo "$SSH_PUBLIC_KEY" | tr '\r\n' '  ' | tr -s ' ' | sed 's/^ //; s/ $//' > /tmp/key.pub
-          
-          echo "─── SSH public key check ───"
-          echo "Line count: $(wc -l < /tmp/key.pub)"
-          echo "Byte count: $(wc -c < /tmp/key.pub)"
-          echo "First 80 chars: $(head -c 80 /tmp/key.pub)"
-          echo "Last 50 chars:  $(tail -c 50 /tmp/key.pub)"
-          echo "────────────────────────────"
-          
           echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
           
-          for i in $(seq 1 8); do
+          for i in $(seq 1 3); do
             echo "════════ Attempt $i at $(date -u) ════════"
             
             OUTPUT=$(oci compute instance launch \
@@ -77,20 +68,33 @@ jobs:
             echo "$OUTPUT"
             
             if echo "$OUTPUT" | grep -q '"lifecycle-state"'; then
-              echo "✅ SUCCESS — instance created!"
-              exit 0
+              INSTANCE_ID=$(echo "$OUTPUT" | grep -oP '"id":\s*"\K[^"]+' | head -1)
+              echo ""
+              echo "════════════════════════════════════════════"
+              echo "🎉🎉🎉 INSTANCE CREATED SUCCESSFULLY! 🎉🎉🎉"
+              echo "════════════════════════════════════════════"
+              echo "Instance OCID: $INSTANCE_ID"
+              echo ""
+              echo "Next: open OCI Console → Compute → Instances"
+              echo "Find: sanomin-whatsapp-server → copy Public IP"
+              echo "════════════════════════════════════════════"
+              echo "::error title=🎉 INSTANCE CREATED::Instance OCID $INSTANCE_ID — check OCI Console for the public IP"
+              exit 1
             fi
             
-            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError\|TooManyRequests\|LimitExceeded"; then
-              echo "⏳ Capacity or rate limit, waiting 60s..."
-              sleep 60
+            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError"; then
+              echo "⏳ Out of capacity, waiting 150s..."
+              sleep 150
+            elif echo "$OUTPUT" | grep -qi "TooManyRequests\|LimitExceeded"; then
+              echo "⏳ Rate limited, waiting 180s..."
+              sleep 180
             else
               echo "❌ Unexpected error, aborting."
               exit 1
             fi
           done
           
-          echo "🔁 Attempts exhausted, next run in 30 min"
+          echo "🔁 Attempts exhausted, next run in ~7 min"
           exit 0
 
       - name: Show result
