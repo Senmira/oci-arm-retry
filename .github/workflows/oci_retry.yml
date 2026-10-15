@@ -8,7 +8,7 @@ on:
 jobs:
   retry:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Install OCI CLI
@@ -44,13 +44,9 @@ jobs:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          # Normalize the SSH public key to one line:
-          # 1. Replace any \r or \n with spaces
-          # 2. Squeeze repeated spaces into a single space
-          # 3. Trim leading/trailing spaces
+          # Normalize the SSH public key to one line
           echo "$SSH_PUBLIC_KEY" | tr '\r\n' '  ' | tr -s ' ' | sed 's/^ //; s/ $//' > /tmp/key.pub
           
-          # Debug: show what we're sending
           echo "─── SSH public key check ───"
           echo "Line count: $(wc -l < /tmp/key.pub)"
           echo "Byte count: $(wc -c < /tmp/key.pub)"
@@ -60,7 +56,7 @@ jobs:
           
           echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
           
-          for i in $(seq 1 6); do
+          for i in $(seq 1 8); do
             echo "════════ Attempt $i at $(date -u) ════════"
             
             OUTPUT=$(oci compute instance launch \
@@ -73,6 +69,9 @@ jobs:
               --subnet-id "$OCI_SUBNET_ID" \
               --assign-public-ip true \
               --ssh-authorized-keys-file /tmp/key.pub \
+              --connection-timeout 30 \
+              --read-timeout 60 \
+              --no-retry \
               2>&1) || true
             
             echo "$OUTPUT"
@@ -83,8 +82,8 @@ jobs:
             fi
             
             if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError\|TooManyRequests\|LimitExceeded"; then
-              echo "⏳ Capacity or rate limit, waiting 90s..."
-              sleep 90
+              echo "⏳ Capacity or rate limit, waiting 60s..."
+              sleep 60
             else
               echo "❌ Unexpected error, aborting."
               exit 1
