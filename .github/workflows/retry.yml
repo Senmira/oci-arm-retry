@@ -1,0 +1,86 @@
+name: OCI ARM Instance Retry
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Install OCI CLI
+        run: pip install oci-cli
+
+      - name: Configure OCI CLI
+        env:
+          OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+          OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+          OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+        run: |
+          mkdir -p ~/.oci
+          printf '%s' "$OCI_CLI_KEY_CONTENT" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_CLI_USER
+          fingerprint=$OCI_CLI_FINGERPRINT
+          key_file=$HOME/.oci/oci_api_key.pem
+          tenancy=$OCI_CLI_TENANCY
+          region=$OCI_CLI_REGION
+          EOF
+          chmod 600 ~/.oci/config
+          oci iam region list --output table > /dev/null && echo "OCI CLI configured OK"
+
+      - name: Retry ARM instance launch
+        env:
+          OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+          OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+          OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          printf '%s\n' "$SSH_PUBLIC_KEY" > /tmp/key.pub
+          echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
+          
+          for i in $(seq 1 8); do
+            echo "════════ Attempt $i at $(date -u) ════════"
+            
+            OUTPUT=$(oci compute instance launch \
+              --compartment-id "$OCI_COMPARTMENT_ID" \
+              --availability-domain "dOaV:AP-HYDERABAD-1-AD-1" \
+              --display-name "sanomin-whatsapp-server" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config "file:///tmp/shape.json" \
+              --image-id "$OCI_IMAGE_ID" \
+              --subnet-id "$OCI_SUBNET_ID" \
+              --assign-public-ip true \
+              --ssh-authorized-keys-file /tmp/key.pub \
+              2>&1) || true
+            
+            echo "$OUTPUT"
+            
+            if echo "$OUTPUT" | grep -q '"lifecycle-state"'; then
+              echo "✅ SUCCESS — instance created!"
+              exit 0
+            fi
+            
+            if echo "$OUTPUT" | grep -qi "out of host capacity\|InternalError"; then
+              echo "⏳ Out of capacity, waiting 60s..."
+              sleep 60
+            else
+              echo "❌ Unexpected error, aborting."
+              exit 1
+            fi
+          done
+          
+          echo "🔁 8 attempts exhausted, next run in 15 min"
+          exit 0
+
+      - name: Show result
+        if: always()
+        run: echo "Workflow finished at $(date -u)"
