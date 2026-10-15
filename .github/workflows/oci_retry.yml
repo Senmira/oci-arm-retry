@@ -44,7 +44,18 @@ jobs:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          printf '%s\n' "$SSH_PUBLIC_KEY" > /tmp/key.pub
+          # Sanitize the SSH public key: strip all newlines and collapse whitespace
+          # into single spaces so it fits on one line as Oracle expects.
+          echo "$SSH_PUBLIC_KEY" | tr -d '\r\n' | sed 's/[[:space:]]\{1,\}/ /g' | sed 's/^ //; s/ $//' > /tmp/key.pub
+          
+          # Debug: show what we're sending
+          echo "─── SSH public key check ───"
+          echo "Line count: $(wc -l < /tmp/key.pub)"
+          echo "Byte count: $(wc -c < /tmp/key.pub)"
+          echo "First 60 chars: $(head -c 60 /tmp/key.pub)"
+          echo "Last 40 chars:  $(tail -c 40 /tmp/key.pub)"
+          echo "────────────────────────────"
+          
           echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
           
           for i in $(seq 1 8); do
