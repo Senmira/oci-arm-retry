@@ -44,16 +44,18 @@ jobs:
           SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
           SUPPRESS_LABEL_WARNING: "True"
         run: |
-          # Sanitize the SSH public key: strip all newlines and collapse whitespace
-          # into single spaces so it fits on one line as Oracle expects.
-          echo "$SSH_PUBLIC_KEY" | tr -d '\r\n' | sed 's/[[:space:]]\{1,\}/ /g' | sed 's/^ //; s/ $//' > /tmp/key.pub
+          # Properly normalize the SSH public key to one line:
+          # 1. Replace any \r or \n with spaces
+          # 2. Squeeze repeated spaces into a single space
+          # 3. Trim leading/trailing spaces
+          echo "$SSH_PUBLIC_KEY" | tr '\r\n' '  ' | tr -s ' ' | sed 's/^ //; s/ $//' > /tmp/key.pub
           
           # Debug: show what we're sending
           echo "─── SSH public key check ───"
           echo "Line count: $(wc -l < /tmp/key.pub)"
           echo "Byte count: $(wc -c < /tmp/key.pub)"
-          echo "First 60 chars: $(head -c 60 /tmp/key.pub)"
-          echo "Last 40 chars:  $(tail -c 40 /tmp/key.pub)"
+          echo "First 80 chars: $(head -c 80 /tmp/key.pub)"
+          echo "Last 50 chars:  $(tail -c 50 /tmp/key.pub)"
           echo "────────────────────────────"
           
           echo '{ "ocpus": 1, "memoryInGBs": 6 }' > /tmp/shape.json
